@@ -5,6 +5,7 @@
 #undef USBXBox360
 
 #define LED PC13
+#define START_ACTICATES_DPAD
 
 const uint32_t watchdogSeconds = 3;
 
@@ -154,6 +155,7 @@ void loop() {
         if (xb != 0xFFFF && (state & mask))
           button(c, xb, 1);
       }
+#ifdef START_ACTIVATES_DPAD      
       if (state & SC_BTN_START) {
         if (state & SC_BTN_LEFT) {
           button(c, XBOX_DLEFT, 1);
@@ -168,6 +170,7 @@ void loop() {
           button(c, XBOX_DDOWN, 1);
         }
       }
+#endif      
       send(c);
     }
   }
