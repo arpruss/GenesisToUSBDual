@@ -8,10 +8,21 @@
 
 const uint32_t watchdogSeconds = 3;
 
-// NB: connect A10 to TX, A9 to RX
+// Looking straight on at female socket (or from back of male jack):
 
-SegaController sega(PA5, PA0, PA1, PA2, PA3, PA4, PA6);
-SegaController segaSecond(PB5, PB0, PB1, PB2, PB3, PB4, PB6);
+// 5 4 3 2 1
+//  9 8 7 6
+
+// 3.3 PA3 PA2 PA1 PA0
+//   PA6 GND PA5 PA4
+
+// 3.3 PB3 PB5 PB4 PB6
+//   PB9 GND PB8 PB7
+
+
+// pins:                    7,   1,   2,   3,   4,   6,   9
+SegaController sega(      PA5, PA0, PA1, PA2, PA3, PA4, PA6);
+SegaController segaSecond(PB8, PB6, PB4, PB5, PB3, PB7, PB9);
 
 #define NUM_INPUTS 2
 
@@ -69,8 +80,8 @@ void setup() {
   pinMode(LED,OUTPUT);
   digitalWrite(LED,1);
   USBComposite.setProductString("GenesisToXBox360");
-  XBox360.registerComponent();
   XBox360second.registerComponent();
+  XBox360.registerComponent();
   XBox360.setManualReportMode(true);
   XBox360second.setManualReportMode(true);
   USBComposite.begin();
@@ -114,46 +125,50 @@ void send(uint8 controller) {
 void loop() {
   iwdg_feed();
   bool active = false;
-  for (uint8 i = 0 ; i < NUM_INPUTS ; i++) {
-    word state = inputs[i]->getState();
+  for (uint8 c = 0 ; c < NUM_INPUTS ; c++) {
+    word state = inputs[c]->getState();
     if (state & SC_CTL_ON) {
       active = true;
-      if (state & SC_BTN_LEFT) 
-          X(i, -32768);
-      else if (state & SC_BTN_RIGHT)
-          X(i, 32767);
-      else
-          X(i, 0);
+      int16 x = 0;
+      if (! (state & SC_BTN_START)) {
+        if (state & SC_BTN_LEFT)
+          x = -32768;
+        else if (state & SC_BTN_RIGHT)
+          x = 32767;
+      }
+      X(c,x);
+
+      int16 y = 0;
+      if (! (state & SC_BTN_START)) {
+        if (state & SC_BTN_UP) 
+            y = 32767;
+        else if (state & SC_BTN_DOWN) 
+            y = -32768;
+      }
+      Y(c,y);
   
-      if (state & SC_BTN_UP) 
-          Y(i, 32767);
-      else if (state & SC_BTN_DOWN) 
-          Y(i, -32768);
-      else
-          Y(i, 0);
-  
-      buttons(i, 0);
+      buttons(c, 0);
       uint16_t mask = 1;
       for (int i = 0; i < 16; i++, mask <<= 1) {
         uint16_t xb = remap[i];
         if (xb != 0xFFFF && (state & mask))
-          button(i, xb, 1);
+          button(c, xb, 1);
       }
-      if (state & XBOX_START) {
+      if (state & SC_BTN_START) {
         if (state & SC_BTN_LEFT) {
-          button(i, XBOX_DLEFT, 1);
+          button(c, XBOX_DLEFT, 1);
         }
         if (state & SC_BTN_RIGHT) {
-          button(i, XBOX_DRIGHT, 1);
+          button(c, XBOX_DRIGHT, 1);
         }
         if (state & SC_BTN_UP) {
-          button(i, XBOX_DUP, 1);
+          button(c, XBOX_DUP, 1);
         }
         if (state & SC_BTN_DOWN) {
-          button(i, XBOX_DDOWN, 1);
+          button(c, XBOX_DDOWN, 1);
         }
       }
-      send(i);
+      send(c);
     }
   }
   digitalWrite(LED,active?0:1);
