@@ -6,7 +6,7 @@
 #undef USBXBox360
 
 #define LED PC13
-#define START_ACTICATES_DPAD
+#define START_ACTIVATES_DPAD
 
 const uint32_t watchdogSeconds = 3;
 
