@@ -1,5 +1,6 @@
+// This needs version 0.91 or later of the USB Composite library: https://github.com/arpruss/USBComposite_stm32f1
 #include <libmaple/iwdg.h>
-#include <SegaController.h>
+#include "SegaController.h"
 #include <USBXBox360.h>
 #include "USBXBox360second.h"
 #undef USBXBox360
