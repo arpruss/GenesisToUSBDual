@@ -60,8 +60,8 @@ const uint16_t remap_retroarch[16] = {
 
   0xFFFF | XBOX_DRIGHT,
   XBOX_START,
-  XBOX_B, // A
-  XBOX_A, // B
+  XBOX_A, // A
+  XBOX_B, // B
   
   XBOX_X, // C
   XBOX_LSHOULDER, // X
