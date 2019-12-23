@@ -33,6 +33,8 @@ SegaController* inputs[] = { &sega, &segaSecond };
 USBXBox360 XBox360;
 USBXBox360second XBox360second;
 
+uint32_t lastDataTime[2] = { 0, 0 };
+
 /*
  *     SC_CTL_ON    = 1, // The controller is connected
     SC_BTN_UP    = 2,
@@ -77,16 +79,26 @@ inline int16_t range10u16s(uint16_t x) {
   return (((int32_t)(uint32_t)x - 512) * 32767 + 255) / 512;
 }
 
+void reset(uint8 controller) {
+  X(controller, 0);
+  Y(controller, 0);
+  buttons(controller, 0);
+}
+
 void setup() {
   iwdg_init(IWDG_PRE_256, watchdogSeconds*156);
   pinMode(LED,OUTPUT);
   digitalWrite(LED,1);
-  USBComposite.setProductString("GenesisToXBox360");
-  XBox360second.registerComponent();
+  USBComposite.setProductString("GenesisToUSB");
   XBox360.registerComponent();
+  XBox360second.registerComponent();
   XBox360.setManualReportMode(true);
   XBox360second.setManualReportMode(true);
   USBComposite.begin();
+  for (uint8 c = 0 ; c < 2 ; c++) {
+    reset(c);
+    send(c);
+  }
 }
 
 void button(uint8 controller, uint8 buttonNumber, uint8 value) {
@@ -127,9 +139,12 @@ void send(uint8 controller) {
 void loop() {
   iwdg_feed();
   bool active = false;
+
   for (uint8 c = 0 ; c < NUM_INPUTS ; c++) {
     word state = inputs[c]->getState();
+    
     if (state & SC_CTL_ON) {
+      lastDataTime[c] = millis();
       active = true;
       int16 x = 0;
       if (! (state & SC_BTN_START)) {
@@ -171,9 +186,14 @@ void loop() {
           button(c, XBOX_DDOWN, 1);
         }
       }
-#endif      
-      send(c);
+#endif
     }
+    else if (millis() - lastDataTime[c] >= 5000) {
+       // we hold the last state for 5 seconds, in case something's temporarily wrong with the transmission 
+       // but then we just clear the data
+       reset(c);
+    }
+    send(c);
   }
   digitalWrite(LED,active?0:1);
 }
