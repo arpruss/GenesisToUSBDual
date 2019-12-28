@@ -3,6 +3,12 @@
 #include "SegaController.h"
 #include <USBComposite.h>
 
+/*
+ * Sketch uses 20460 bytes (83%) of program storage space. Maximum is 24576 bytes.
+Global variables use 4248 bytes (41%) of dynamic memory, leaving 5992 bytes for local variables. Maximum is 10240 bytes.
+ */
+
+#define USB_DISCONNECT_DELAY 2048 // works with Raspberry PI 3+ ; for other devices, may want something smaller
 #define LED PC13
 #define START_ACTIVATES_DPAD
 
@@ -24,13 +30,31 @@ const uint32_t watchdogSeconds = 3;
 SegaController sega(      PA5, PA0, PA1, PA2, PA3, PA4, PA6);
 SegaController segaSecond(PB8, PB6, PB4, PB5, PB3, PB7, PB9);
 
-#define NUM_INPUTS 2
+bool segaActive = false;
+bool segaSecondActive = false;
 
-SegaController* inputs[] = { &sega, &segaSecond };
+#define MAX_INPUTS 2
 
-USBMultiXBox360<2> XBox360;
+#define SWITCH_MODE_DELAY 1500
 
-uint32_t lastDataTime[2] = { 0, 0 };
+USBMultiXBox360<2> XBox360Dual;
+USBXBox360 XBox360Single;
+
+uint32 numOutputs = 0;
+SegaController* inputs[MAX_INPUTS];
+USBXBox360Controller* outputs[MAX_INPUTS];
+
+enum ControlMode {
+  MODE_UNDEFINED,
+  MODE_NONE,
+  MODE_DUAL,
+  MODE_SINGLE_FIRST,
+  MODE_SINGLE_SECOND
+} mode = MODE_UNDEFINED;
+
+ControlMode upcomingMode = MODE_NONE;
+uint32 newUpcomingModeTime = 0;
+
 
 /*
  *     SC_CTL_ON    = 1, // The controller is connected
@@ -82,30 +106,101 @@ void reset(USBXBox360Controller* c) {
   c->buttons(0);
 }
 
-void setup() {
-  iwdg_init(IWDG_PRE_256, watchdogSeconds*156);
-  pinMode(LED,OUTPUT);
-  digitalWrite(LED,1);
-  USBComposite.setProductString("GenesisToUSB");
-  XBox360.begin();
-  for (uint8 n = 0 ; n < 2 ; n++) {
-    USBXBox360Controller* c = &XBox360.controllers[n];
+void setMode(ControlMode m) {
+  if (mode == m)
+    return;
+
+  if (m == MODE_DUAL) {
+    if (numOutputs == 1)
+      XBox360Single.end();
+    if (numOutputs != 2)
+      XBox360Dual.begin();
+
+    numOutputs = 2;
+    outputs[0] = &XBox360Dual.controllers[0];
+    outputs[1] = &XBox360Dual.controllers[1];
+    inputs[0] = &sega;
+    inputs[1] = &segaSecond;
+  }
+  else if (m == MODE_SINGLE_FIRST || m == MODE_SINGLE_SECOND || m == MODE_NONE) {
+    if (numOutputs == 2) {
+      XBox360Dual.end();
+    }
+    if (numOutputs != 1) {
+      XBox360Single.begin();
+    }
+
+    numOutputs = 1;
+    outputs[0] = &XBox360Single;
+    if (m == MODE_SINGLE_FIRST || m == MODE_NONE)
+      inputs[0] = &sega;
+    else
+      inputs[0] = &segaSecond;
+  }
+
+  mode = m;
+  upcomingMode = mode;
+  
+  for (uint8 n = 0 ; n < numOutputs ; n++) {
+    USBXBox360Controller* c = outputs[n];
     reset(c);
     c->send();
     c->setManualReportMode(true);
   }
 }
 
+ControlMode determine(word s1, word s2) {
+  if (s1 & SC_CTL_ON) {
+    if (s2 & SC_CTL_ON) {
+      digitalWrite(PC13,0);
+      return MODE_DUAL;
+    }
+    else 
+      return MODE_SINGLE_FIRST;
+  }
+  else {
+    if (s2 & SC_CTL_ON) {
+      return MODE_SINGLE_SECOND;
+    }
+    else {
+      return MODE_NONE;
+    }
+  }
+}
+
+void setup() {
+  iwdg_init(IWDG_PRE_256, watchdogSeconds*156);
+  pinMode(LED,OUTPUT);
+  digitalWrite(LED,1);
+  USBComposite.setProductString("GenesisToUSB");
+  USBComposite.setDisconnectDelay(USB_DISCONNECT_DELAY);
+
+  setMode(determine(sega.getState(),segaSecond.getState()));
+}
+
 void loop() {
   iwdg_feed();
   bool active = false;
 
-  for (uint32 n = 0 ; n < NUM_INPUTS ; n++) {
-    word state = inputs[n]->getState();
-    USBXBox360Controller* c = &XBox360.controllers[n];
+  if (mode != upcomingMode && millis() >= newUpcomingModeTime + SWITCH_MODE_DELAY)
+    setMode(upcomingMode);
+
+  word s1 = sega.getState();
+  word s2 = segaSecond.getState();
+
+  ControlMode m = determine(s1,s2);
+
+  if (m != upcomingMode) {
+    upcomingMode = m;
+    newUpcomingModeTime = millis();
+  }
+
+  for (uint32 n = 0 ; n < numOutputs ; n++) {
+    word state = inputs[n] == &sega ? s1 : s2;
+    USBXBox360Controller* c = outputs[n];
     
     if (state & SC_CTL_ON) {
-      lastDataTime[n] = millis();
+      //lastDataTime[n] = millis();
       active = true;
       int16 x = 0;
       if (! (state & SC_BTN_START)) {
@@ -149,11 +244,13 @@ void loop() {
       }
 #endif
     }
+#if 0
     else if (millis() - lastDataTime[n] >= 5000) {
        // we hold the last state for 5 seconds, in case something's temporarily wrong with the transmission 
        // but then we just clear the data
        reset(c);
     }
+#endif     
     c->send();
   }
   digitalWrite(LED,active?0:1);
