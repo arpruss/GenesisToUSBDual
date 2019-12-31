@@ -8,7 +8,7 @@
 Global variables use 4248 bytes (41%) of dynamic memory, leaving 5992 bytes for local variables. Maximum is 10240 bytes.
  */
 
-#define USB_DISCONNECT_DELAY 2048 // works with Raspberry PI 3+ ; for other devices, may want something smaller
+#define USB_DISCONNECT_DELAY 500 // works with Raspberry PI 3+ ; for other devices, may want something smaller
 #define LED PC13
 #define START_ACTIVATES_DPAD
 
@@ -240,6 +240,9 @@ void loop() {
         }
         if (state & SC_BTN_DOWN) {
           c->button(XBOX_DDOWN, 1);
+        }
+        if (state & SC_BTN_Z) {
+          c->button(XBOX_BACK, 1);
         }
       }
 #endif
