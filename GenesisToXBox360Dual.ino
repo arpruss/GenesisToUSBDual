@@ -1,18 +1,17 @@
-// This needs version 0.92 or later of the USB Composite library: https://github.com/arpruss/USBComposite_stm32f1
+// This needs version 0.94 or later of the USB Composite library: https://github.com/arpruss/USBComposite_stm32f1
 #include <libmaple/iwdg.h>
 #include "SegaController.h"
 #include <USBComposite.h>
 
-/*
- * Sketch uses 20460 bytes (83%) of program storage space. Maximum is 24576 bytes.
-Global variables use 4248 bytes (41%) of dynamic memory, leaving 5992 bytes for local variables. Maximum is 10240 bytes.
- */
-
-#define USB_DISCONNECT_DELAY 500 // works with Raspberry PI 3+ ; for other devices, may want something smaller
+#define USB_DISCONNECT_DELAY 500 // for some devices, may want something smaller
 #define LED PC13
-#define START_ACTIVATES_DPAD
+#define START_COMBO
+#ifdef START_COMBO
+#define START_ONLY_ON_RELEASE // the start button only shows up on release, and only if it wasn't used to trigger a key combination
+#define START_DEPRESSION_TIME 200
+#endif
 
-const uint32_t watchdogSeconds = 3;
+const uint32_t watchdogSeconds = 6;
 
 // Looking straight on at female socket (or from back of male jack):
 
@@ -30,31 +29,19 @@ const uint32_t watchdogSeconds = 3;
 SegaController sega(      PA5, PA0, PA1, PA2, PA3, PA4, PA6);
 SegaController segaSecond(PB8, PB6, PB4, PB5, PB3, PB7, PB9);
 
-bool segaActive = false;
-bool segaSecondActive = false;
+#define NUM_INPUTS 2
 
-#define MAX_INPUTS 2
+SegaController* inputs[] = { &sega, &segaSecond };
 
-#define SWITCH_MODE_DELAY 1500
+USBXBox360W<4> XBox360;
 
-USBMultiXBox360<2> XBox360Dual;
-USBXBox360 XBox360Single;
+uint32_t lastDataTime[2] = { 0, 0 };
 
-uint32 numOutputs = 0;
-SegaController* inputs[MAX_INPUTS];
-USBXBox360Controller* outputs[MAX_INPUTS];
-
-enum ControlMode {
-  MODE_UNDEFINED,
-  MODE_NONE,
-  MODE_DUAL,
-  MODE_SINGLE_FIRST,
-  MODE_SINGLE_SECOND
-} mode = MODE_UNDEFINED;
-
-ControlMode upcomingMode = MODE_NONE;
-uint32 newUpcomingModeTime = 0;
-
+struct start_data {
+  uint32 time;
+  boolean pressed;
+  boolean combo;
+} start[2] = { {0} };
 
 /*
  *     SC_CTL_ON    = 1, // The controller is connected
@@ -73,99 +60,38 @@ uint32 newUpcomingModeTime = 0;
 
  */
 
-const uint16_t remap_retroarch[16] = {
-  0xFFFF,
-  0xFFFF | XBOX_DUP,
-  0xFFFF | XBOX_DDOWN,
-  0xFFFF | XBOX_DLEFT,
-
-  0xFFFF | XBOX_DRIGHT,
-  XBOX_START,
-  XBOX_A, // A
-  XBOX_B, // B
-  
-  XBOX_X, // C
-  XBOX_LSHOULDER, // X
-  XBOX_Y, // Y
-  XBOX_RSHOULDER, // Z
-  
-  XBOX_GUIDE, // MODE
-
-  0xFFFF, 0xFFFF, 0xFFFF
+const struct remap_item {
+  uint16_t xbox;
+  bool worksWithStart;
+} remap_retroarch[16] = {
+  { 0xFFFF, true },
+  { 0xFFFF | XBOX_DUP, false },
+  { 0xFFFF | XBOX_DDOWN, false },
+  { 0xFFFF | XBOX_DLEFT, false },
+  { 0xFFFF | XBOX_DRIGHT, false },
+  { XBOX_START, false },
+  { XBOX_A, true }, // A
+  { XBOX_B, true }, // B
+  { XBOX_X, true }, // C
+  { XBOX_LSHOULDER, false }, // X
+  { XBOX_Y, false }, // Y
+  { XBOX_RSHOULDER, false }, // Z  
+  { XBOX_GUIDE, true }, // MODE
+  { 0xFFFF, true },
+  { 0xFFFF, true },
+  { 0xFFFF, true }
 };
 
-const uint16_t* remap = remap_retroarch;
+const struct remap_item * remap = remap_retroarch;
 
 inline int16_t range10u16s(uint16_t x) {
   return (((int32_t)(uint32_t)x - 512) * 32767 + 255) / 512;
 }
 
-void reset(USBXBox360Controller* c) {
+void reset(USBXBox360WController* c) {
   c->X(0);
   c->Y(0);
   c->buttons(0);
-}
-
-void setMode(ControlMode m) {
-  if (mode == m)
-    return;
-
-  if (m == MODE_DUAL) {
-    if (numOutputs == 1)
-      XBox360Single.end();
-    if (numOutputs != 2)
-      XBox360Dual.begin();
-
-    numOutputs = 2;
-    outputs[0] = &XBox360Dual.controllers[0];
-    outputs[1] = &XBox360Dual.controllers[1];
-    inputs[0] = &sega;
-    inputs[1] = &segaSecond;
-  }
-  else if (m == MODE_SINGLE_FIRST || m == MODE_SINGLE_SECOND || m == MODE_NONE) {
-    if (numOutputs == 2) {
-      XBox360Dual.end();
-    }
-    if (numOutputs != 1) {
-      XBox360Single.begin();
-    }
-
-    numOutputs = 1;
-    outputs[0] = &XBox360Single;
-    if (m == MODE_SINGLE_FIRST || m == MODE_NONE)
-      inputs[0] = &sega;
-    else
-      inputs[0] = &segaSecond;
-  }
-
-  mode = m;
-  upcomingMode = mode;
-  
-  for (uint8 n = 0 ; n < numOutputs ; n++) {
-    USBXBox360Controller* c = outputs[n];
-    reset(c);
-    c->send();
-    c->setManualReportMode(true);
-  }
-}
-
-ControlMode determine(word s1, word s2) {
-  if (s1 & SC_CTL_ON) {
-    if (s2 & SC_CTL_ON) {
-      digitalWrite(PC13,0);
-      return MODE_DUAL;
-    }
-    else 
-      return MODE_SINGLE_FIRST;
-  }
-  else {
-    if (s2 & SC_CTL_ON) {
-      return MODE_SINGLE_SECOND;
-    }
-    else {
-      return MODE_NONE;
-    }
-  }
 }
 
 void setup() {
@@ -174,33 +100,27 @@ void setup() {
   digitalWrite(LED,1);
   USBComposite.setProductString("GenesisToUSB");
   USBComposite.setDisconnectDelay(USB_DISCONNECT_DELAY);
-
-  setMode(determine(sega.getState(),segaSecond.getState()));
+  XBox360.begin();
+  for (uint8 n = 0 ; n < 2 ; n++) {
+    USBXBox360WController* c = &XBox360.controllers[n];
+    c->setManualReportMode(true);
+  }
 }
 
 void loop() {
   iwdg_feed();
+  
+  if (! USBComposite)
+    return;
+    
   bool active = false;
 
-  if (mode != upcomingMode && millis() >= newUpcomingModeTime + SWITCH_MODE_DELAY)
-    setMode(upcomingMode);
-
-  word s1 = sega.getState();
-  word s2 = segaSecond.getState();
-
-  ControlMode m = determine(s1,s2);
-
-  if (m != upcomingMode) {
-    upcomingMode = m;
-    newUpcomingModeTime = millis();
-  }
-
-  for (uint32 n = 0 ; n < numOutputs ; n++) {
-    word state = inputs[n] == &sega ? s1 : s2;
-    USBXBox360Controller* c = outputs[n];
+  for (uint32 n = 0 ; n < NUM_INPUTS ; n++) {
+    word state = inputs[n]->getState();
+    USBXBox360WController* c = &XBox360.controllers[n];
     
     if (state & SC_CTL_ON) {
-      //lastDataTime[n] = millis();
+      lastDataTime[n] = millis();
       active = true;
       int16 x = 0;
       if (! (state & SC_BTN_START)) {
@@ -221,40 +141,81 @@ void loop() {
       c->Y(y);
   
       c->buttons(0);
+      struct start_data *s = start + n;
       uint16_t mask = 1;
       for (int i = 0; i < 16; i++, mask <<= 1) {
-        uint16_t xb = remap[i];
+#ifdef START_ONLY_ON_RELEASE
+        if ((state & SC_BTN_START) && ! remap[i].worksWithStart)
+          continue;
+#endif
+        uint16_t xb = remap[i].xbox;
         if (xb != 0xFFFF && (state & mask))
           c->button(xb, 1);
       }
-#ifdef START_ACTIVATES_DPAD      
+#ifdef START_COMBO
       if (state & SC_BTN_START) {
+        s->pressed = true;
+        s->time = millis();
         if (state & SC_BTN_LEFT) {
           c->button(XBOX_DLEFT, 1);
+          c->X(0);
+          s->combo = true;
         }
         if (state & SC_BTN_RIGHT) {
           c->button(XBOX_DRIGHT, 1);
+          c->X(0);
+          s->combo = true;
         }
         if (state & SC_BTN_UP) {
           c->button(XBOX_DUP, 1);
+          c->Y(0);
+          s->combo = true;
         }
         if (state & SC_BTN_DOWN) {
           c->button(XBOX_DDOWN, 1);
+          c->Y(0);
+          s->combo = true;
+        }
+        if (state & SC_BTN_X) {
+          c->button(XBOX_BACK, 1);
+          s->combo = true;
+        }
+        if (state & SC_BTN_Y) {
+          c->button(XBOX_LSHOULDER, 1);
+          s->combo = true;
         }
         if (state & SC_BTN_Z) {
-          c->button(XBOX_BACK, 1);
+          c->button(XBOX_R3, 1);
+          s->combo = true;
         }
       }
+      else {
+#ifdef START_ONLY_ON_RELEASE
+        uint32 t = millis();
+        if (s->pressed) {
+          if (s->combo) 
+            s->time = 0;
+          else
+            s->time = t;
+        }
+        if (s->time != 0 && t <= s->time + START_DEPRESSION_TIME)
+          c->button(XBOX_START, 1);
+        else
+          s->time = 0;
+        s->pressed = false;
+        s->combo = false;
+#endif        
+      }
 #endif
+      c->send();
     }
-#if 0
-    else if (millis() - lastDataTime[n] >= 5000) {
-       // we hold the last state for 5 seconds, in case something's temporarily wrong with the transmission 
+    else if (c->isConnected() && millis() - lastDataTime[n] >= 2000) {
+       // we hold the last state for 2 seconds, in case something's temporarily wrong with the transmission 
        // but then we just clear the data
        reset(c);
+       c->send();
+       c->connect(false);
     }
-#endif     
-    c->send();
   }
   digitalWrite(LED,active?0:1);
 }
