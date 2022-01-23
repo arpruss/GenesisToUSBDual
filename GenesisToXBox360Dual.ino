@@ -33,7 +33,7 @@ SegaController segaSecond(PB8, PB6, PB4, PB5, PB3, PB7, PB9);
 
 SegaController* inputs[] = { &sega, &segaSecond };
 
-USBXBox360W<4> XBox360;
+USBXBox360W<2> XBox360;
 
 uint32_t lastDataTime[2] = { 0, 0 };
 
@@ -181,7 +181,7 @@ void loop() {
           s->combo = true;
         }
         if (state & SC_BTN_Y) {
-          c->button(XBOX_LSHOULDER, 1);
+          c->button(XBOX_GUIDE, 1);
           s->combo = true;
         }
         if (state & SC_BTN_Z) {
